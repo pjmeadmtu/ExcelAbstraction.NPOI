@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -9,6 +9,8 @@ using System.Reflection;
 using ExcelAbstraction.Entities;
 using ExcelAbstraction.Helpers;
 using ExcelAbstraction.Services;
+using NPOI;
+using NPOI.HPSF;
 using NPOI.HSSF.Model;
 using NPOI.HSSF.Record;
 using NPOI.HSSF.Record.Aggregates;
@@ -22,361 +24,486 @@ using NPOI.XSSF.UserModel;
 
 namespace ExcelAbstraction.NPOI
 {
-	public class ExcelService : IExcelService
-	{
-		public IFormatProvider Format { get; set; }
-
-		public ExcelService()
-		{
-			Format = NumberFormatInfo.CurrentInfo;
-		}
-
-		public Workbook ReadWorkbook(string path)
-		{
-			if (!File.Exists(path)) return null;
-
-			using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read))
-				return ReadWorkbook(stream);
-		}
-
-		public Workbook ReadWorkbook(Stream stream)
-		{
-			return CreateWorkbook(WorkbookFactory.Create(stream));
-		}
-
-		Workbook CreateWorkbook(IWorkbook iWorkbook)
-		{
-			var worksheets = new List<Worksheet>();
-			var workbook = new Workbook(worksheets);
-			AddToNames(workbook.Names, iWorkbook);
-			string[] names = workbook.Names.Select(name => name.Name).ToArray();
-			for (int i = 0; i < iWorkbook.NumberOfSheets; i++)
-			{
-				ISheet sheet = iWorkbook.GetSheetAt(i);
-				Worksheet worksheet = CreateWorksheet(sheet, i);
-				worksheet.IsHidden = iWorkbook.IsSheetHidden(i);
-				AddToValidations(worksheet.Validations, sheet, names);
-				worksheets.Add(worksheet);
-			}
-			return workbook;
-		}
-
-		Worksheet CreateWorksheet(ISheet sheet, int index)
-		{
-			var rows = new List<IRow>();
-			int maxColumns = 0;
-			for (int i = 0; i <= sheet.LastRowNum; i++)
-			{
-				IRow row = sheet.GetRow(i);
-				if (row != null)
-					maxColumns = Math.Max(maxColumns, row.LastCellNum);
-				rows.Add(row);
-			}
-			return new Worksheet(sheet.SheetName, index, maxColumns, rows.Select(row => CreateRow(row, maxColumns)).ToArray());
-		}
-
-		Row CreateRow(IRow row, int columns)
-		{
-			if (row == null) return null;
-
-			var cells = new List<Cell>();
-			ICell[] iCells = row.Cells.ToArray();
-			int skipped = 0;
-			for (int i = 0; i < columns; i++)
-			{
-				Cell cell = null;
-				if (i - skipped >= iCells.Length || i != iCells[i - skipped].ColumnIndex)
-					skipped++;
-				else cell = CreateCell(iCells[i - skipped]);
-				cells.Add(cell);
-			}
-			return new Row(row.RowNum, cells);
-		}
-
-		Cell CreateCell(ICell cell)
-		{
-			string value = null;
-			switch (cell.CellType)
-			{
-				case CellType.String:
-					value = cell.StringCellValue;
-					break;
-				case CellType.Numeric:
-					value = cell.NumericCellValue.ToString(Format);
-					break;
-				case CellType.Boolean:
-					value = cell.BooleanCellValue.ToString();
-					break;
-				case CellType.Formula:
-					switch (cell.CachedFormulaResultType)
-					{
-						case CellType.String:
-							value = cell.StringCellValue;
-							break;
-						case CellType.Numeric:
-							//excel trigger is probably out-of-date
-							value = (cell.CellFormula == "TODAY()" ? DateTime.Today.ToOADate() : cell.NumericCellValue).ToString(Format);
-							break;
-					}
-					break;
-			}
-			return new Cell(cell.RowIndex, cell.ColumnIndex, value);
-		}
-
-		public void WriteWorkbook(Workbook workbook, ExcelVersion version, string path)
-		{
-			using (Stream stream = File.Create(path))
-				WriteWorkbook(workbook, version, stream);
-		}
-		public void WriteWorkbook(Workbook workbook, ExcelVersion version, Stream stream)
-		{
-			CreateWorkbook(workbook, version).Write(stream);
-		}
-
-		static IWorkbook CreateWorkbook(Workbook workbook, ExcelVersion version)
-		{
-			IWorkbook iWorkbook;
-			switch (version)
-			{
-				case ExcelVersion.Xls:
-					iWorkbook = new HSSFWorkbook();
-					break;
-				case ExcelVersion.Xlsx:
-					iWorkbook = new XSSFWorkbook();
-					break;
-				default: throw new InvalidEnumArgumentException("version", (int)version, version.GetType());
-			}
-
-			AddNames(iWorkbook, version, workbook.Names.ToArray());
-			foreach (Worksheet worksheet in workbook.Worksheets)
-			{
-				ISheet sheet = iWorkbook.CreateSheet(worksheet.Name);
-				AddValidations(sheet, version, worksheet.Validations.ToArray());
-				AddRows(sheet, worksheet.Rows.ToArray());
-				if (worksheet.IsHidden)
-					iWorkbook.SetSheetHidden(worksheet.Index, SheetState.Hidden);
-			}
-
-			return iWorkbook;
-		}
-
-		public object GetWorkbook(string path)
-		{
-			return WorkbookFactory.Create(path);
-		}
-
-		public object GetWorkbook(Stream stream)
-		{
-			return WorkbookFactory.Create(stream);
-		}
-
-		public void SaveWorkbook(object workbook, string path)
-		{
-			using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
-				SaveWorkbook(workbook, stream);
-		}
-
-		public void SaveWorkbook(object workbook, Stream stream)
-		{
-			((IWorkbook)workbook).Write(stream);
-		}
-
-		static void AddToNames(ICollection<NamedRange> names, IWorkbook workbook)
-		{
-			string propName;
-			ExcelVersion version;
-			if (workbook as HSSFWorkbook != null)
-			{
-				propName = "names";
-				version = ExcelVersion.Xls;
-			}
-			else
-			{
-				if (workbook as XSSFWorkbook != null)
-				{
-					propName = "namedRanges";
-					version = ExcelVersion.Xlsx;
-				}
-				else return;
-			}
-
-			var namedRanges = ((IList)workbook.GetType()
-				.GetField(propName, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-				.GetValue(workbook));
-
-			foreach (IName name in namedRanges)
-			{
-				if (name.RefersToFormula.Contains("://")) continue;
-
-				Range range = ExcelHelper.ParseRange(name.RefersToFormula, version);
-				if (range == null) continue;
-
-				names.Add(new NamedRange
-				{
-					Name = name.NameName,
-					Range = range
-				});
-			}
-		}
-
-		static void AddToValidations(ICollection<DataValidation> validations, ISheet sheet, string[] names)
-		{
-			var hssfSheet = sheet as HSSFSheet;
-			if (hssfSheet != null)
-			{
-				AddToValidations(validations, hssfSheet, names);
-			}
-			else
-			{
-				var xssfSheet = sheet as XSSFSheet;
-				if (xssfSheet != null)
-				{
-					AddToValidations(validations, xssfSheet, names);
-				}
-			}
-		}
-
-		static void AddToValidations(ICollection<DataValidation> validations, HSSFSheet sheet, string[] names)
-		{
-			InternalSheet internalSheet = sheet.Sheet;
-			var dataValidityTable = (DataValidityTable)internalSheet.GetType()
-				.GetField("_dataValidityTable", BindingFlags.NonPublic | BindingFlags.Instance)
-				.GetValue(internalSheet);
-			if (dataValidityTable == null) return;
-
-			var validationList = (IList)dataValidityTable.GetType()
-				.GetField("_validationList", BindingFlags.NonPublic | BindingFlags.Instance)
-				.GetValue(dataValidityTable);
-			foreach (DVRecord record in validationList)
-			{
-				var formula = (Formula)record.GetType()
-					.GetField("_formula1", BindingFlags.NonPublic | BindingFlags.Instance)
-					.GetValue(record);
-
-				var validation = new DataValidation
-				{
-					Range = ExcelHelper.ParseRange(record.CellRangeAddress.CellRangeAddresses[0].FormatAsString(), ExcelVersion.Xls)
-				};
-
-				Ptg ptg = formula.Tokens[0];
-				var namePtg = ptg as NamePtg;
-				if (namePtg != null)
-				{
-					validation.Type = DataValidationType.Formula;
-					validation.Name = names.ElementAt(namePtg.Index);
-				}
-				else
-				{
-					var stringPtg = ptg as StringPtg;
-					if (stringPtg != null)
-					{
-						validation.Type = DataValidationType.List;
-						validation.List = stringPtg.Value.Split('\0');
-					}
-					else continue;
-				}
-
-				validations.Add(validation);
-			}
-		}
-
-		static void AddToValidations(ICollection<DataValidation> validations, XSSFSheet sheet, string[] names)
-		{
-			CT_DataValidations dataValidations = ((CT_Worksheet)sheet.GetType()
-				.GetField("worksheet", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-				.GetValue(sheet)).dataValidations;
-			if (dataValidations == null) return;
-
-			foreach (CT_DataValidation dataValidation in dataValidations.dataValidation)
-			{
-				if (dataValidation.formula1 == null) continue;
-
-				var range = ExcelHelper.ParseRange(dataValidation.sqref, ExcelVersion.Xlsx);
-				if (range == null) continue;
-
-				var validation = new DataValidation { Range = range };
-
-				if (names.Contains(dataValidation.formula1))
-				{
-					validation.Type = DataValidationType.Formula;
-					validation.Name = dataValidation.formula1;
-				}
-				else
-				{
-					validation.Type = DataValidationType.List;
-					validation.List = dataValidation.formula1.Trim('\"').Split(',');
-				}
-
-				validations.Add(validation);
-			}
-		}
-
-		public void AddNames(object workbook, ExcelVersion version, params NamedRange[] names)
-		{
-			AddNames((IWorkbook)workbook, version, names);
-		}
-
-		static void AddNames(IWorkbook workbook, ExcelVersion version, params NamedRange[] names)
-		{
-			foreach (NamedRange namedRange in names)
-			{
-				IName name = workbook.CreateName();
-				name.NameName = namedRange.Name;
-				name.RefersToFormula = ExcelHelper.RangeToString(namedRange.Range, version);
-			}
-		}
-
-		public void AddRows(object workbook, string sheetName, params Row[] rows)
-		{
-			AddRows(((IWorkbook)workbook).GetSheet(sheetName), rows);
-		}
-
-		static void AddRows(ISheet sheet, params Row[] rows)
-		{
-			foreach (Row row in rows)
-			{
-				if (row == null) continue;
-
-				IRow iRow = sheet.CreateRow(row.Index);
-				foreach (Cell cell in row.Cells)
-				{
-					if (cell == null) continue;
-
-					ICell iCell = iRow.CreateCell(cell.ColumnIndex);
-					if (cell.Value != null)
-						iCell.SetCellValue(cell.Value);
-				}
-			}
-		}
-
-		public void AddValidations(object workbook, string sheetName, ExcelVersion version, params DataValidation[] validations)
-		{
-			AddValidations(((IWorkbook)workbook).GetSheet(sheetName), version, validations);
-		}
-
-		static void AddValidations(ISheet sheet, ExcelVersion version, params DataValidation[] validations)
-		{
-			IDataValidationHelper helper = sheet.GetDataValidationHelper();
-			foreach (DataValidation validation in validations)
-			{
-				if ((validation.List == null || validation.List.Count == 0) && validation.Name == null)
-				{
-					throw new InvalidOperationException("Validation is invalid");
-				}
-
-				IDataValidationConstraint constraint = validation.Name != null ?
-					helper.CreateFormulaListConstraint(validation.Name) :
-					helper.CreateExplicitListConstraint(validation.List.ToArray());
-
-				var range = new CellRangeAddressList(
-					validation.Range.RowStart ?? 0,
-					validation.Range.RowEnd ?? ExcelHelper.GetRowMax(version) - 1,
-					validation.Range.ColumnStart ?? 0,
-					validation.Range.ColumnEnd ?? ExcelHelper.GetColumnMax(version) - 1);
-
-				IDataValidation dataValidation = helper.CreateValidation(constraint, range);
-				sheet.AddValidationData(dataValidation);
-			}
-		}
-	}
+    
+    public class ExcelService : IExcelService
+    {
+        public ExcelService()
+        {
+            this.Format = NumberFormatInfo.CurrentInfo;
+        }
+        
+        public Stream AddAuthor(Stream stream, ExcelVersion excelVersion, string author)
+        {
+            return this.AddProperty(stream, excelVersion, delegate (SummaryInformation summaryInformation) {
+                summaryInformation.Author = author;
+            }, delegate (CoreProperties coreProperties) {
+                coreProperties.Creator = author;
+            });
+        }
+        
+        private static void AddComment(ICell cell, string comment)
+        {
+            ISheet sheet = cell.Sheet;
+            ICreationHelper creationHelper = sheet.Workbook.GetCreationHelper();
+            IDrawing drawing = sheet.CreateDrawingPatriarch();
+            IClientAnchor anchor = creationHelper.CreateClientAnchor();
+            anchor.Col1 = cell.ColumnIndex;
+            anchor.Col2 = (int) (cell.ColumnIndex + 3);
+            anchor.Row1 = cell.RowIndex;
+            anchor.Row2 = (int) (cell.RowIndex + 5);
+            IComment comment2 = drawing.CreateCellComment(anchor);
+            comment2.String = (creationHelper.CreateRichTextString(comment));
+            cell.CellComment = comment2;
+        }
+        
+        public Stream AddComments(Stream stream, ExcelVersion excelVersion, string comments)
+        {
+            return this.AddProperty(stream, excelVersion, delegate (SummaryInformation summaryInfo) {
+                summaryInfo.Comments = comments;
+            }, delegate (CoreProperties coreProperties) {
+                coreProperties.Description = comments;
+            });
+        }
+        
+        private static void AddNames(IWorkbook workbook, ExcelVersion version, params NamedRange[] names)
+        {
+            foreach (NamedRange range in names)
+            {
+                IName name = workbook.CreateName();
+                name.NameName = range.Name;
+                name.RefersToFormula = ExcelHelper.RangeToString(range.Range, version);
+            }
+        }
+        
+        public void AddNames(object workbook, ExcelVersion version, params NamedRange[] names)
+        {
+            AddNames((IWorkbook) workbook, version, names);
+        }
+        
+        private MemoryStream AddProperty(Stream stream, ExcelVersion excelVersion, Action<SummaryInformation> hssWorkbookAction, Action<CoreProperties> corePropertiesAction)
+        {
+            MemoryStream stream2 = new MemoryStream();
+            if (excelVersion.Equals(ExcelVersion.Xls))
+            {
+                HSSFWorkbook workbook = new HSSFWorkbook(stream);
+                hssWorkbookAction(workbook.SummaryInformation);
+                workbook.Write(stream2);
+            }
+            if (excelVersion.Equals(ExcelVersion.Xlsx))
+            {
+                XSSFWorkbook workbook2 = new XSSFWorkbook(stream);
+                POIXMLProperties properties = workbook2.GetProperties();
+                corePropertiesAction(properties.CoreProperties);
+                workbook2.Write(stream2);
+            }
+            return new MemoryStream(stream2.ToArray());
+        }
+        
+        private static void AddRows(ISheet sheet, params Row[] rows)
+        {
+            foreach (Row row in rows)
+            {
+                if (row != null)
+                {
+                    IRow row2 = sheet.CreateRow(row.Index);
+                    foreach (Cell cell in row.Cells)
+                    {
+                        if (cell != null)
+                        {
+                            ICell cell2 = row2.CreateCell(cell.ColumnIndex);
+                            if (!string.IsNullOrEmpty(cell.DataFormat))
+                            {
+                                IWorkbook workbook = sheet.Workbook;
+                                IDataFormat format = workbook.CreateDataFormat();
+                                cell2.CellStyle = workbook.CreateCellStyle();
+                                cell2.CellStyle.DataFormat = format.GetFormat(cell.DataFormat);
+                            }
+                            if (!string.IsNullOrEmpty(cell.Comment))
+                            {
+                                AddComment(cell2, cell.Comment);
+                            }
+                            if (cell.Value != null)
+                            {
+                                cell2.SetCellValue(cell.Value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        public void AddRows(object workbook, string sheetName, params Row[] rows)
+        {
+            AddRows(((IWorkbook) workbook).GetSheet(sheetName), rows);
+        }
+        
+        private static void AddToNames(ICollection<NamedRange> names, IWorkbook workbook)
+        {
+            string str;
+            ExcelVersion xls;
+            if (workbook is HSSFWorkbook)
+            {
+                str = "names";
+                xls = ExcelVersion.Xls;
+            }
+            else
+            {
+                if (!(workbook is XSSFWorkbook))
+                {
+                    return;
+                }
+                str = "namedRanges";
+                xls = ExcelVersion.Xlsx;
+            }
+            foreach (IName name in (IList) workbook.GetType().GetField(str, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly).GetValue(workbook))
+            {
+                if (name.RefersToFormula.Contains("://"))
+                {
+                    continue;
+                }
+                ExcelAbstraction.Entities.Range range = ExcelHelper.ParseRange(name.RefersToFormula, xls);
+                if (range != null)
+                {
+                    NamedRange item = new NamedRange {
+                        Name = name.NameName,
+                        Range = range
+                    };
+                    names.Add(item);
+                }
+            }
+        }
+        
+        private static void AddToValidations(ICollection<DataValidation> validations, HSSFSheet sheet, string[] names)
+        {
+            InternalSheet sheet2 = sheet.Sheet;
+            DataValidityTable table = (DataValidityTable) sheet2.GetType().GetField("_dataValidityTable", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(sheet2);
+            if (table != null)
+            {
+                foreach (DVRecord record in (IList) table.GetType().GetField("_validationList", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(table))
+                {
+                    Formula formula = (Formula) record.GetType().GetField("_formula1", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(record);
+                    DataValidation item = new DataValidation {
+                        Range = ExcelHelper.ParseRange(record.CellRangeAddress.CellRangeAddresses[0].FormatAsString(), ExcelVersion.Xls)
+                    };
+                    Ptg ptg = formula.Tokens[0];
+                    NamePtg ptg2 = ptg as NamePtg;
+                    if (ptg2 != null)
+                    {
+                        item.Type = DataValidationType.Formula;
+                        item.Name = names.ElementAt<string>(ptg2.Index);
+                    }
+                    else
+                    {
+                        StringPtg ptg3 = ptg as StringPtg;
+                        if (ptg3 == null)
+                        {
+                            continue;
+                        }
+                        item.Type = DataValidationType.List;
+                        item.List = ptg3.Value.Split(new char[1]);
+                    }
+                    validations.Add(item);
+                }
+            }
+        }
+        
+        private static void AddToValidations(ICollection<DataValidation> validations, ISheet sheet, string[] names)
+        {
+            HSSFSheet sheet2 = sheet as HSSFSheet;
+            if (sheet2 != null)
+            {
+                AddToValidations(validations, sheet2, names);
+            }
+            else
+            {
+                XSSFSheet sheet3 = sheet as XSSFSheet;
+                if (sheet3 != null)
+                {
+                    AddToValidations(validations, sheet3, names);
+                }
+            }
+        }
+        
+        private static void AddToValidations(ICollection<DataValidation> validations, XSSFSheet sheet, string[] names)
+        {
+            CT_DataValidations dataValidations = ((CT_Worksheet) sheet.GetType().GetField("worksheet", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly).GetValue(sheet)).dataValidations;
+            if (dataValidations != null)
+            {
+                foreach (CT_DataValidation validation in dataValidations.dataValidation)
+                {
+                    if (validation.formula1 == null)
+                    {
+                        continue;
+                    }
+                    ExcelAbstraction.Entities.Range range = ExcelHelper.ParseRange(validation.sqref, ExcelVersion.Xlsx);
+                    if (range != null)
+                    {
+                        DataValidation item = new DataValidation {
+                            Range = range
+                        };
+                        if (names.Contains<string>(validation.formula1))
+                        {
+                            item.Type = DataValidationType.Formula;
+                            item.Name = validation.formula1;
+                        }
+                        else
+                        {
+                            item.Type = DataValidationType.List;
+                            item.List = validation.formula1.Trim(new char[] { '"' }).Split(new char[] { ',' });
+                        }
+                        validations.Add(item);
+                    }
+                }
+            }
+        }
+        
+        private static void AddValidations(ISheet sheet, ExcelVersion version, params DataValidation[] validations)
+        {
+            IDataValidationHelper dataValidationHelper = sheet.GetDataValidationHelper();
+            foreach (DataValidation validation in validations)
+            {
+                if (((validation.List == null) || (validation.List.Count == 0)) && (validation.Name == null))
+                {
+                    throw new InvalidOperationException("Validation is invalid");
+                }
+                IDataValidationConstraint constraint = (validation.Name != null) ? dataValidationHelper.CreateFormulaListConstraint(validation.Name) : dataValidationHelper.CreateExplicitListConstraint(validation.List.ToArray<string>());
+                int? rowStart = validation.Range.RowStart;
+                int? rowEnd = validation.Range.RowEnd;
+                int? columnStart = validation.Range.ColumnStart;
+                int? columnEnd = validation.Range.ColumnEnd;
+                IDataValidation validation2 = dataValidationHelper.CreateValidation(constraint, new CellRangeAddressList((rowStart != null) ? rowStart.GetValueOrDefault() : 0, (rowEnd != null) ? rowEnd.GetValueOrDefault() : (ExcelHelper.GetRowMax(version) - 1), (columnStart != null) ? columnStart.GetValueOrDefault() : 0, (columnEnd != null) ? columnEnd.GetValueOrDefault() : (ExcelHelper.GetColumnMax(version) - 1)));
+                sheet.AddValidationData(validation2);
+            }
+        }
+        
+        public void AddValidations(object workbook, string sheetName, ExcelVersion version, params DataValidation[] validations)
+        {
+            AddValidations(((IWorkbook) workbook).GetSheet(sheetName), version, validations);
+        }
+        
+        private Cell CreateCell(ICell cell)
+        {
+            string str = null;
+            switch (cell.CellType)
+            {
+                case CellType.Numeric:
+                    str = cell.NumericCellValue.ToString(this.Format);
+                    break;
+                
+                case CellType.String:
+                    str = cell.StringCellValue;
+                    break;
+                
+                case CellType.Formula:
+                    switch (cell.CachedFormulaResultType)
+                    {
+                        case CellType.Numeric:
+                            double num1;
+                            if (cell.CellFormula != "TODAY()")
+                            {
+                                num1 = cell.NumericCellValue;
+                            }
+                            else
+                            {
+                                num1 = DateTime.Today.ToOADate();
+                            }
+                            str = num1.ToString(this.Format);
+                            break;
+                        
+                        case CellType.String:
+                            str = cell.StringCellValue;
+                            break;
+                        
+                        default:
+                            break;
+                    }
+                    break;
+                
+                case CellType.Boolean:
+                    str = cell.BooleanCellValue.ToString();
+                    break;
+                
+                default:
+                    break;
+            }
+            return new Cell(cell.RowIndex, cell.ColumnIndex, str, "", "");
+        }
+        
+        private Row CreateRow(IRow row, int columns)
+        {
+            if (row == null)
+            {
+                return null;
+            }
+            List<Cell> cells = new List<Cell>();
+            ICell[] cellArray = row.Cells.ToArray();
+            int num = 0;
+            for (int i = 0; i < columns; i++)
+            {
+                Cell item = null;
+                if (((i - num) >= cellArray.Length) || (i != cellArray[i - num].ColumnIndex))
+                {
+                    num++;
+                }
+                else
+                {
+                    item = this.CreateCell(cellArray[i - num]);
+                }
+                cells.Add(item);
+            }
+            return new Row(row.RowNum, cells);
+        }
+        
+        private Workbook CreateWorkbook(IWorkbook iWorkbook)
+        {
+            List<Worksheet> worksheets = new List<Worksheet>();
+            Workbook workbook = new Workbook(worksheets);
+            AddToNames(workbook.Names, iWorkbook);
+            string[] names = (from name in workbook.Names select name.Name).ToArray<string>();
+            for (int i = 0; i < iWorkbook.NumberOfSheets; i++)
+            {
+                ISheet sheetAt = iWorkbook.GetSheetAt(i);
+                Worksheet item = this.CreateWorksheet(sheetAt, i);
+                item.IsHidden = iWorkbook.IsSheetHidden(i);
+                AddToValidations(item.Validations, sheetAt, names);
+                worksheets.Add(item);
+            }
+            return workbook;
+        }
+        
+        private static IWorkbook CreateWorkbook(Workbook workbook, ExcelVersion version)
+        {
+            IWorkbook workbook2;
+            switch (version)
+            {
+                case ExcelVersion.Xls:
+                    workbook2 = new HSSFWorkbook();
+                    break;
+                
+                case ExcelVersion.Xlsx:
+                    workbook2 = new XSSFWorkbook();
+                    break;
+                
+                default:
+                    throw new InvalidEnumArgumentException("version", (int) version, version.GetType());
+            }
+            AddNames(workbook2, version, workbook.Names.ToArray<NamedRange>());
+            foreach (Worksheet worksheet in workbook.Worksheets)
+            {
+                ISheet sheet = workbook2.CreateSheet(worksheet.Name);
+                AddValidations(sheet, version, worksheet.Validations.ToArray<DataValidation>());
+                AddRows(sheet, worksheet.Rows.ToArray<Row>());
+                if (worksheet.IsHidden)
+                {
+                    workbook2.SetSheetHidden(worksheet.Index, SheetState.Hidden);
+                }
+            }
+            return workbook2;
+        }
+        
+        private Worksheet CreateWorksheet(ISheet sheet, int index)
+        {
+            List<IRow> list = new List<IRow>();
+            int maxColumns = 0;
+            for (int i = 0; i <= sheet.LastRowNum; i++)
+            {
+                IRow item = sheet.GetRow(i);
+                if (item != null)
+                {
+                    maxColumns = Math.Max(maxColumns, item.LastCellNum);
+                }
+                list.Add(item);
+            }
+            return new Worksheet(sheet.SheetName, index, maxColumns, (from row in list select this.CreateRow(row, maxColumns)).ToArray<Row>());
+        }
+        
+        public string GetAuthor(Stream stream, ExcelVersion excelVersion)
+        {
+            return this.GetProperty(stream, excelVersion, info => info.Author, properties => properties.Creator);
+        }
+        
+        public string GetComments(Stream stream, ExcelVersion excelVersion)
+        {
+            return this.GetProperty(stream, excelVersion, info => info.Comments, properties => properties.Description);
+        }
+        
+        private string GetProperty(Stream stream, ExcelVersion excelVersion, Func<SummaryInformation, string> hssfWorkbookAction, Func<CoreProperties, string> corePropertiesActions)
+        {
+            using (MemoryStream stream2 = new MemoryStream())
+            {
+                stream.CopyTo(stream2);
+                stream.Position = 0L;
+                stream2.Position = 0L;
+                if (!excelVersion.Equals(ExcelVersion.Xls))
+                {
+                    if (excelVersion.Equals(ExcelVersion.Xlsx))
+                    {
+                        CoreProperties coreProperties = new XSSFWorkbook(stream2).GetProperties().CoreProperties;
+                        return corePropertiesActions(coreProperties);
+                    }
+                }
+                else
+                {
+                    SummaryInformation summaryInformation = new HSSFWorkbook(stream2).SummaryInformation;
+                    return hssfWorkbookAction(summaryInformation);
+                }
+            }
+            return string.Empty;
+        }
+        
+        public object GetWorkbook(Stream stream)
+        {
+            return WorkbookFactory.Create(stream);
+        }
+        
+        public object GetWorkbook(string path)
+        {
+            return WorkbookFactory.Create(path);
+        }
+        
+        public Workbook ReadWorkbook(Stream stream)
+        {
+            return this.CreateWorkbook(WorkbookFactory.Create(stream));
+        }
+        
+        public Workbook ReadWorkbook(string path)
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read))
+            {
+                return this.ReadWorkbook(stream);
+            }
+        }
+        
+        public void SaveWorkbook(object workbook, Stream stream)
+        {
+            ((IWorkbook) workbook).Write(stream);
+        }
+        
+        public void SaveWorkbook(object workbook, string path)
+        {
+            using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+            {
+                this.SaveWorkbook(workbook, stream);
+            }
+        }
+        
+        public void WriteWorkbook(Workbook workbook, ExcelVersion version, Stream stream)
+        {
+            CreateWorkbook(workbook, version).Write(stream);
+        }
+        
+        public void WriteWorkbook(Workbook workbook, ExcelVersion version, string path)
+        {
+            using (Stream stream = File.Create(path))
+            {
+                this.WriteWorkbook(workbook, version, stream);
+            }
+        }
+        
+        public IFormatProvider Format { get; set; }
+    }
 }
