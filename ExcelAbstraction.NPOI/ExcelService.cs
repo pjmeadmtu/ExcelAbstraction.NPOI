@@ -1,3 +1,11 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
 using ExcelAbstraction.Entities;
 using ExcelAbstraction.Helpers;
 using ExcelAbstraction.Services;
@@ -13,15 +21,6 @@ using NPOI.SS.Formula.PTG;
 using NPOI.SS.UserModel;
 using NPOI.SS.Util;
 using NPOI.XSSF.UserModel;
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Runtime.CompilerServices;
 
 namespace ExcelAbstraction.NPOI
 {
