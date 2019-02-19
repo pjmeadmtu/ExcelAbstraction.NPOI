@@ -1,29 +1,30 @@
+using ExcelAbstraction.Entities;
+using ExcelAbstraction.Helpers;
+using ExcelAbstraction.Services;
+using NPOI;
+using NPOI.HPSF;
+using NPOI.HSSF.Model;
+using NPOI.HSSF.Record;
+using NPOI.HSSF.Record.Aggregates;
+using NPOI.HSSF.UserModel;
+using NPOI.OpenXmlFormats.Spreadsheet;
+using NPOI.SS.Formula;
+using NPOI.SS.Formula.PTG;
+using NPOI.SS.UserModel;
+using NPOI.SS.Util;
+using NPOI.XSSF.UserModel;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
 namespace ExcelAbstraction.NPOI
 {
-    using ExcelAbstraction.Entities;
-    using ExcelAbstraction.Helpers;
-    using ExcelAbstraction.Services;
-    using NPOI;
-    using NPOI.HPSF;
-    using NPOI.HSSF.Model;
-    using NPOI.HSSF.Record;
-    using NPOI.HSSF.Record.Aggregates;
-    using NPOI.HSSF.UserModel;
-    using NPOI.OpenXmlFormats.Spreadsheet;
-    using NPOI.SS.Formula;
-    using NPOI.SS.Formula.PTG;
-    using NPOI.SS.UserModel;
-    using NPOI.SS.Util;
-    using NPOI.XSSF.UserModel;
-    using System;
-    using System.Collections;
-    using System.Collections.Generic;
-    using System.ComponentModel;
-    using System.Globalization;
-    using System.IO;
-    using System.Linq;
-    using System.Reflection;
-    using System.Runtime.CompilerServices;
     
     public class ExcelService : IExcelService
     {
@@ -35,7 +36,7 @@ namespace ExcelAbstraction.NPOI
         public Stream AddAuthor(Stream stream, ExcelVersion excelVersion, string author)
         {
             return this.AddProperty(stream, excelVersion, delegate (SummaryInformation summaryInformation) {
-                summaryInformation.set_Author(author);
+                summaryInformation.Author = author;
             }, delegate (CoreProperties coreProperties) {
                 coreProperties.Creator = author;
             });
@@ -47,19 +48,19 @@ namespace ExcelAbstraction.NPOI
             ICreationHelper creationHelper = sheet.Workbook.GetCreationHelper();
             IDrawing drawing = sheet.CreateDrawingPatriarch();
             IClientAnchor anchor = creationHelper.CreateClientAnchor();
-            anchor.set_Col1(cell.get_ColumnIndex());
-            anchor.set_Col2((int) (cell.get_ColumnIndex() + 3));
-            anchor.set_Row1(cell.get_RowIndex());
-            anchor.set_Row2((int) (cell.get_RowIndex() + 5));
+            anchor.Col1 = cell.ColumnIndex;
+            anchor.Col2 = (int) (cell.ColumnIndex + 3);
+            anchor.Row1 = cell.RowIndex;
+            anchor.Row2 = (int) (cell.RowIndex + 5);
             IComment comment2 = drawing.CreateCellComment(anchor);
-            comment2.set_String(creationHelper.CreateRichTextString(comment));
-            cell.set_CellComment(comment2);
+            comment2.String = (creationHelper.CreateRichTextString(comment));
+            cell.CellComment = comment2;
         }
         
         public Stream AddComments(Stream stream, ExcelVersion excelVersion, string comments)
         {
             return this.AddProperty(stream, excelVersion, delegate (SummaryInformation summaryInfo) {
-                summaryInfo.set_Comments(comments);
+                summaryInfo.Comments = comments;
             }, delegate (CoreProperties coreProperties) {
                 coreProperties.Description = comments;
             });
@@ -70,8 +71,8 @@ namespace ExcelAbstraction.NPOI
             foreach (NamedRange range in names)
             {
                 IName name = workbook.CreateName();
-                name.set_NameName(range.Name);
-                name.set_RefersToFormula(ExcelHelper.RangeToString(range.Range, version));
+                name.NameName = range.Name;
+                name.RefersToFormula = ExcelHelper.RangeToString(range.Range, version);
             }
         }
         
@@ -115,8 +116,8 @@ namespace ExcelAbstraction.NPOI
                             {
                                 IWorkbook workbook = sheet.Workbook;
                                 IDataFormat format = workbook.CreateDataFormat();
-                                cell2.set_CellStyle(workbook.CreateCellStyle());
-                                cell2.CellStyle.set_DataFormat(format.GetFormat(cell.DataFormat));
+                                cell2.CellStyle = workbook.CreateCellStyle();
+                                cell2.CellStyle.DataFormat = format.GetFormat(cell.DataFormat);
                             }
                             if (!string.IsNullOrEmpty(cell.Comment))
                             {
@@ -157,15 +158,15 @@ namespace ExcelAbstraction.NPOI
             }
             foreach (IName name in (IList) workbook.GetType().GetField(str, BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly).GetValue(workbook))
             {
-                if (name.get_RefersToFormula().Contains("://"))
+                if (name.RefersToFormula.Contains("://"))
                 {
                     continue;
                 }
-                ExcelAbstraction.Entities.Range range = ExcelHelper.ParseRange(name.get_RefersToFormula(), xls);
+                ExcelAbstraction.Entities.Range range = ExcelHelper.ParseRange(name.RefersToFormula, xls);
                 if (range != null)
                 {
                     NamedRange item = new NamedRange {
-                        Name = name.get_NameName(),
+                        Name = name.NameName,
                         Range = range
                     };
                     names.Add(item);
@@ -181,7 +182,7 @@ namespace ExcelAbstraction.NPOI
             {
                 foreach (DVRecord record in (IList) table.GetType().GetField("_validationList", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(table))
                 {
-                    NPOI.SS.Formula.Formula formula = (NPOI.SS.Formula.Formula) record.GetType().GetField("_formula1", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(record);
+                    Formula formula = (Formula) record.GetType().GetField("_formula1", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(record);
                     DataValidation item = new DataValidation {
                         Range = ExcelHelper.ParseRange(record.CellRangeAddress.CellRangeAddresses[0].FormatAsString(), ExcelVersion.Xls)
                     };
@@ -190,7 +191,7 @@ namespace ExcelAbstraction.NPOI
                     if (ptg2 != null)
                     {
                         item.Type = DataValidationType.Formula;
-                        item.Name = names.ElementAt<string>(ptg2.get_Index());
+                        item.Name = names.ElementAt<string>(ptg2.Index);
                     }
                     else
                     {
@@ -200,7 +201,7 @@ namespace ExcelAbstraction.NPOI
                             continue;
                         }
                         item.Type = DataValidationType.List;
-                        item.List = ptg3.get_Value().Split(new char[1]);
+                        item.List = ptg3.Value.Split(new char[1]);
                     }
                     validations.Add(item);
                 }
@@ -287,11 +288,11 @@ namespace ExcelAbstraction.NPOI
             switch (cell.CellType)
             {
                 case CellType.Numeric:
-                    str = cell.get_NumericCellValue().ToString(this.Format);
+                    str = cell.NumericCellValue.ToString(this.Format);
                     break;
                 
                 case CellType.String:
-                    str = cell.get_StringCellValue();
+                    str = cell.StringCellValue;
                     break;
                 
                 case CellType.Formula:
@@ -299,9 +300,9 @@ namespace ExcelAbstraction.NPOI
                     {
                         case CellType.Numeric:
                             double num1;
-                            if (cell.get_CellFormula() != "TODAY()")
+                            if (cell.CellFormula != "TODAY()")
                             {
-                                num1 = cell.get_NumericCellValue();
+                                num1 = cell.NumericCellValue;
                             }
                             else
                             {
@@ -311,7 +312,7 @@ namespace ExcelAbstraction.NPOI
                             break;
                         
                         case CellType.String:
-                            str = cell.get_StringCellValue();
+                            str = cell.StringCellValue;
                             break;
                         
                         default:
@@ -320,13 +321,13 @@ namespace ExcelAbstraction.NPOI
                     break;
                 
                 case CellType.Boolean:
-                    str = cell.get_BooleanCellValue().ToString();
+                    str = cell.BooleanCellValue.ToString();
                     break;
                 
                 default:
                     break;
             }
-            return new Cell(cell.get_RowIndex(), cell.get_ColumnIndex(), str, "", "");
+            return new Cell(cell.RowIndex, cell.ColumnIndex, str, "", "");
         }
         
         private Row CreateRow(IRow row, int columns)
@@ -341,7 +342,7 @@ namespace ExcelAbstraction.NPOI
             for (int i = 0; i < columns; i++)
             {
                 Cell item = null;
-                if (((i - num) >= cellArray.Length) || (i != cellArray[i - num].get_ColumnIndex()))
+                if (((i - num) >= cellArray.Length) || (i != cellArray[i - num].ColumnIndex))
                 {
                     num++;
                 }
@@ -351,7 +352,7 @@ namespace ExcelAbstraction.NPOI
                 }
                 cells.Add(item);
             }
-            return new Row(row.get_RowNum(), cells);
+            return new Row(row.RowNum, cells);
         }
         
         private Workbook CreateWorkbook(IWorkbook iWorkbook)
@@ -360,7 +361,7 @@ namespace ExcelAbstraction.NPOI
             Workbook workbook = new Workbook(worksheets);
             AddToNames(workbook.Names, iWorkbook);
             string[] names = (from name in workbook.Names select name.Name).ToArray<string>();
-            for (int i = 0; i < iWorkbook.get_NumberOfSheets(); i++)
+            for (int i = 0; i < iWorkbook.NumberOfSheets; i++)
             {
                 ISheet sheetAt = iWorkbook.GetSheetAt(i);
                 Worksheet item = this.CreateWorksheet(sheetAt, i);
@@ -405,26 +406,26 @@ namespace ExcelAbstraction.NPOI
         {
             List<IRow> list = new List<IRow>();
             int maxColumns = 0;
-            for (int i = 0; i <= sheet.get_LastRowNum(); i++)
+            for (int i = 0; i <= sheet.LastRowNum; i++)
             {
                 IRow item = sheet.GetRow(i);
                 if (item != null)
                 {
-                    maxColumns = Math.Max(maxColumns, item.get_LastCellNum());
+                    maxColumns = Math.Max(maxColumns, item.LastCellNum);
                 }
                 list.Add(item);
             }
-            return new Worksheet(sheet.get_SheetName(), index, maxColumns, (from row in list select this.CreateRow(row, maxColumns)).ToArray<Row>());
+            return new Worksheet(sheet.SheetName, index, maxColumns, (from row in list select this.CreateRow(row, maxColumns)).ToArray<Row>());
         }
         
         public string GetAuthor(Stream stream, ExcelVersion excelVersion)
         {
-            return this.GetProperty(stream, excelVersion, info => info.get_Author(), properties => properties.Creator);
+            return this.GetProperty(stream, excelVersion, info => info.Author, properties => properties.Creator);
         }
         
         public string GetComments(Stream stream, ExcelVersion excelVersion)
         {
-            return this.GetProperty(stream, excelVersion, info => info.get_Comments(), properties => properties.Description);
+            return this.GetProperty(stream, excelVersion, info => info.Comments, properties => properties.Description);
         }
         
         private string GetProperty(Stream stream, ExcelVersion excelVersion, Func<SummaryInformation, string> hssfWorkbookAction, Func<CoreProperties, string> corePropertiesActions)
